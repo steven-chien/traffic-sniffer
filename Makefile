@@ -1,15 +1,18 @@
 CC=mips-openwrt-linux-uclibc-gcc
 CC=clang
 
-LDFLAG=-Wall -g
-PCAP_LDFLAG=-lpcap
+SRC := $(wildcard src/*.c)
+OBJ := $(addprefix obj/,$(notdir $(SRC:.c=.o)))
+LD_FLAGS := -lpcap
+CC_FLAGS := -Wall -g -MMD
 
+bin/traffic_sniffer: $(OBJ)
+	$(CC) $(LD_FLAGS) -o $@ $^
 
-all: socket_poll.o
-	$(CC) obj/*.o -o bin/traffic_sniffer $(LDFLAG)
-
-socket_poll.o:
-	$(CC) -c src/traffic_sniffer.c -o obj/traffic_sniffer.o $(LDFLAG)
+obj/%.o: src/%.c
+	$(CC) $(CC_FLAGS) -c -o $@ $<
 
 clean:
-	rm obj/*.o bin/*
+	rm bin/* obj/*
+
+-include $(OBJ:.o=.d)
