@@ -1,9 +1,9 @@
 /*
  * =====================================================================================
  *
- *       Filename:  socket_poll.c
+ *       Filename:  traffic_sniffer.c
  *
- *    Description:  Functions returning non blocking descriptors and poll loop
+ *    Description:  A non block remote traffic sniffer
  *
  *        Version:  1.0
  *        Created:  Friday, June 19, 2015 02:42:48 HKT
@@ -23,20 +23,27 @@
 #include <unistd.h>
 
 #include <sys/epoll.h>
-#include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <netdb.h>
+#include <fcntl.h>
+
+#include <signal.h>
+
+#include "pcap_handler.h"
 
 #define MAXEVENTS 64
 #define PORT 8888
 
+struct epoll_event *epoll_events = NULL;	/* reusable event structure and list of events to wait for */
+pid_t pid = -1;
+
 void server()
 {
-	unsigned int sock;				/* socket descr */
-	unsigned int epoll_fd;				/* epoll descriptor */
-	struct sockaddr_in serv_addr;			/* to specify server info */
-	struct epoll_event event, *epoll_events = NULL;	/* reusable event structure and list of events to wait for */
+	unsigned int sock = -1;			/* socket descr */
+	unsigned int epoll_fd;			/* epoll descriptor */
+	struct sockaddr_in serv_addr;		/* to specify server info */
+	struct epoll_event event;		/* temp holding of event info */
 	int ret;
 
 	/* specify port number */
@@ -157,9 +164,22 @@ void server()
 					}
 
 					/* echo back */
-					ret = write(epoll_events[i].data.fd, recvBuf, count);
-					if(ret==-1)
-						goto fail;
+					if(pid==-1) {
+						pid = fork();
+						if(pid!=0) {
+							ret = write(epoll_events[i].data.fd, recvBuf, count);
+							if(ret==-1)
+								goto fail;
+						}
+						else {
+							pcap_t *pcap_descr = pcap_init("wlp3s0", "!(dst host 127.0.0.1 and dst port 8888)");
+							pcap_loop(pcap_descr, -1, pcap_cb, (unsigned char*)epoll_events[i].data.fd);
+						}
+					}
+					else if(pid!=-1) {
+						kill(pid, SIGTERM);
+						pid = -1;
+					}
 				}
 			}
 		}
@@ -167,10 +187,15 @@ void server()
 
 	free(epoll_events);
 	close(sock);
+	return;
 fail:
 	fprintf(stderr, "error: %s\n", strerror(errno));
-	if(epoll_events!=NULL)
+	if(epoll_events!=NULL) {
 		free(epoll_events);
+		epoll_events = NULL;
+	}
+	if(sock!=-1)
+		close(sock);
 	exit(1);
 }
 
