@@ -54,14 +54,13 @@ void pcap_cb(u_char *data, const struct pcap_pkthdr *packet_hdr, const u_char *p
 	json_object *dst = json_object_new_object();
 
 	json_object *dst_port, *src_port, *dst_addr, *src_addr;
-	json_object *ip_len, *protocol;
+	json_object *iphr_len, *protocol;
 	json_object *tcp_len;
 
 	/* extract ip and tcp header */
 	packet += linkhdrlen;
 	struct ip *ip_hdr = (struct ip*)packet;
 	
-
 	/* source and dest ip */
 	src_addr = json_object_new_string(inet_ntoa(ip_hdr->ip_src));
 	json_object_object_add(src, "addr", src_addr);
@@ -73,12 +72,12 @@ void pcap_cb(u_char *data, const struct pcap_pkthdr *packet_hdr, const u_char *p
 	json_object_object_add(jobj, "protocol", protocol);
 
 	/* ip packet length */
-	ip_len = json_object_new_int(ip_hdr->ip_len);
-	json_object_object_add(jobj, "ip_len", ip_len);
+	iphr_len = json_object_new_int((ip_hdr->ip_hl)*4);
+	json_object_object_add(jobj, "iphr_len", iphr_len);
 
 	/* use the following depending on protocol */
-	struct tcphdr *tcp_hdr = (struct tcphdr*)(packet + ip_hdr->ip_hl);
-	struct udphdr *udp_hdr = (struct udphdr*)(packet + ip_hdr->ip_hl);
+	struct tcphdr *tcp_hdr = (struct tcphdr*)(packet + (ip_hdr->ip_hl) * 4);
+	struct udphdr *udp_hdr = (struct udphdr*)(packet + (ip_hdr->ip_hl) * 4);
 
 	switch(ip_hdr->ip_p) {
 		case 6:
@@ -89,7 +88,7 @@ void pcap_cb(u_char *data, const struct pcap_pkthdr *packet_hdr, const u_char *p
 			dst_port = json_object_new_int(htons(tcp_hdr->dest));
 			json_object_object_add(dst, "port", dst_port);
 
-			tcp_len = json_object_new_int(tcp_hdr->doff);
+			tcp_len = json_object_new_int((tcp_hdr->doff)*4);
 			json_object_object_add(jobj, "tcp_len", tcp_len);
 			break;
 		case 17:
