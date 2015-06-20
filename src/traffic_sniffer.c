@@ -37,6 +37,7 @@
 
 struct epoll_event *epoll_events = NULL;	/* reusable event structure and list of events to wait for */
 pid_t pid = -1;
+int port_no = -1;
 
 void server()
 {
@@ -123,6 +124,7 @@ void server()
 					ret = getnameinfo(&in_addr, in_len, client_addr, sizeof(client_addr), client_port, sizeof(client_port), NI_NUMERICHOST | NI_NUMERICSERV);
 					if(ret==0) {
 						printf("accepted on %d, host=%s, port=%s\n", client_conn, client_addr, client_port);
+						port_no = atoi(client_port);
 					}
 
 					/* set temp sock to non blocking mode */
@@ -172,13 +174,18 @@ void server()
 								goto fail;
 						}
 						else {
-							pcap_t *pcap_descr = pcap_init("wlp3s0", "!(dst host 127.0.0.1 and dst port 8888)");
+							char buf[512];
+							//sprintf(buf, "!(dst host 127.0.0.1 and dst port %d)", port_no);
+							sprintf(buf, "!(src port %d)", port_no);
+							printf("rule: %s\n", buf);
+							pcap_t *pcap_descr = pcap_init("wlp3s0", buf);
 							pcap_loop(pcap_descr, -1, pcap_cb, (unsigned char*)epoll_events[i].data.fd);
 						}
 					}
 					else if(pid!=-1) {
 						kill(pid, SIGTERM);
 						pid = -1;
+						printf("Capturing ends!\n");
 					}
 				}
 			}
