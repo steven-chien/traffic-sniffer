@@ -83,10 +83,10 @@ void pcap_cb(u_char *data, const struct pcap_pkthdr *packet_hdr, const u_char *p
 	switch(ip_hdr->ip_p) {
 		case 6:
 			/* extract source and dest tcp port */
-			src_port = json_object_new_int(htons(tcp_hdr->th_sport));
+			src_port = json_object_new_int(htons(tcp_hdr->source));
 			json_object_object_add(src, "port", src_port);
 			
-			dst_port = json_object_new_int(htons(tcp_hdr->th_dport));
+			dst_port = json_object_new_int(htons(tcp_hdr->dest));
 			json_object_object_add(dst, "port", dst_port);
 
 			tcp_len = json_object_new_int(tcp_hdr->doff);
@@ -94,10 +94,10 @@ void pcap_cb(u_char *data, const struct pcap_pkthdr *packet_hdr, const u_char *p
 			break;
 		case 17:
 			/* extract sorce and dest udp port */
-			src_port = json_object_new_int(htons(udp_hdr->uh_sport));
+			src_port = json_object_new_int(htons(udp_hdr->source));
 			json_object_object_add(src, "port", src_port);
 
-			dst_port = json_object_new_int(htons(udp_hdr->uh_dport));
+			dst_port = json_object_new_int(htons(udp_hdr->dest));
 			json_object_object_add(dst, "port", dst_port);
 
 			break;
