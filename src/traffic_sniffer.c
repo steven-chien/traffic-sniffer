@@ -21,6 +21,7 @@
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
+#include <signal.h>
 
 #include <sys/epoll.h>
 #include <sys/socket.h>
@@ -28,23 +29,32 @@
 #include <netdb.h>
 #include <fcntl.h>
 
-#include <signal.h>
+#include <json-c/json.h>
 
 #include "pcap_handler.h"
 
 #define MAXEVENTS 64
 #define PORT 8888
 
-struct epoll_event *epoll_events = NULL;	/* reusable event structure and list of events to wait for */
-pid_t pid = -1;
-int port_no = -1;
+//static char client_addr[NI_MAXHOST], client_port[NI_MAXSERV];	/* client address and port string */
+static char *client_addr =NULL, *client_port = NULL;	/* client address and port string */
 
+/* 
+ * ===  FUNCTION  ======================================================================
+ *         Name:  server
+ *  Description:  Non-blocking server loop to handle connections
+ * =====================================================================================
+ */
 void server()
 {
-	unsigned int sock = -1;			/* socket descr */
-	unsigned int epoll_fd;			/* epoll descriptor */
-	struct sockaddr_in serv_addr;		/* to specify server info */
-	struct epoll_event event;		/* temp holding of event info */
+	/*-----------------------------------------------------------------------------
+	 *  Define server info, create new socket and bind
+	 *-----------------------------------------------------------------------------*/
+	unsigned int sock = -1;
+	unsigned int epoll_fd;
+	struct sockaddr_in serv_addr;
+	struct epoll_event event;
+	struct epoll_event *epoll_events = NULL;
 	int ret;
 
 	/* specify port number */
@@ -52,7 +62,7 @@ void server()
 	serv_addr.sin_port = htons(PORT);
 	serv_addr.sin_addr.s_addr = INADDR_ANY;
 
-	/* create a new socket instance */
+	/* create a new socket descr */
 	sock = socket(AF_INET, SOCK_STREAM, 0);
 	if(sock==-1)
 		goto fail;
@@ -62,6 +72,9 @@ void server()
 	if(ret==-1)
 		goto fail;
 
+	/*-----------------------------------------------------------------------------
+	 *  Set socket to non-block mode, start listening and create epoll instance
+	 *-----------------------------------------------------------------------------*/
 	/* set socket to non blocking mode */
 	ret = fcntl(sock, F_SETFL, O_NONBLOCK);
 	if(ret==-1)
@@ -87,30 +100,35 @@ void server()
 	/* create 64 event holders */
 	epoll_events = calloc(MAXEVENTS, sizeof(event));
 
-	/* start waiting for connections... */
+	/*-----------------------------------------------------------------------------
+	 *  Server main loop
+	 *-----------------------------------------------------------------------------*/
 	while(1) {
 		int n, i;
 		n = epoll_wait(epoll_fd, epoll_events, MAXEVENTS, -1);
 
-		/* handle epoll_events */
+		/* handle epoll events */
 		for(i=0; i<n; i++) {
 			if ((epoll_events[i].events & EPOLLERR) || (epoll_events[i].events & EPOLLHUP) || (!(epoll_events[i].events & EPOLLIN))) {
-				/* error handling */
+				/*-----------------------------------------------------------------------------
+				 *  Handle error
+				 *-----------------------------------------------------------------------------*/
 				fprintf(stderr, "%d hung up!\n", epoll_events[i].data.fd);
 				close(epoll_events[i].data.fd);
 			}
 			else if(sock==epoll_events[i].data.fd) {
-				/* accept incoming connections */
+				/*-----------------------------------------------------------------------------
+				 *  Accept new connections and add to epoll control 
+				 *-----------------------------------------------------------------------------*/
 				while(1) {
 					struct sockaddr in_addr;				/* storing client info */
 					socklen_t in_len;
 					int client_conn;					/* connection descr */
-					char client_addr[NI_MAXHOST], client_port[NI_MAXSERV];	/* client address and port string */
 					in_len = sizeof(in_addr);
 
 					client_conn = accept(sock, &in_addr, &in_len);		/* accept client connection */
 					if(client_conn==-1) {
-						/* there is no available data right now, not an error */
+						/* there is no available data for reading right now, not an error */
 						if(errno==EAGAIN || errno==EWOULDBLOCK) {
 							break;
 						}
@@ -120,11 +138,21 @@ void server()
 						}
 					}
 
-					/* get connection info, return numeric ip addr */
-					ret = getnameinfo(&in_addr, in_len, client_addr, sizeof(client_addr), client_port, sizeof(client_port), NI_NUMERICHOST | NI_NUMERICSERV);
+					/* check if other client is connected */
+					/* plan to implement a link list in the future, to support multiple sniffing */
+					if(client_addr!=NULL && client_port!=NULL) {
+						write(client_conn, "{\"msg\":\"One client a time\"}", 29);
+						close(client_conn);
+						break;
+					}
+
+					/* capture addr and port */
+					client_addr = calloc(NI_MAXHOST+1, sizeof(char));
+					client_port = calloc(NI_MAXSERV+1, sizeof(char));
+
+					ret = getnameinfo(&in_addr, in_len, client_addr, NI_MAXHOST, client_port, NI_MAXSERV, NI_NUMERICHOST | NI_NUMERICSERV);
 					if(ret==0) {
 						printf("accepted on %d, host=%s, port=%s\n", client_conn, client_addr, client_port);
-						port_no = atoi(client_port);
 					}
 
 					/* set temp sock to non blocking mode */
@@ -133,7 +161,7 @@ void server()
 						goto fail;
 					}
 
-					/* register the new descriptor to epoll instance */
+					/* register the new descriptor to epoll */
 					event.data.fd = client_conn;
 					event.events = EPOLLIN | EPOLLET;
 					ret = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_conn, &event);
@@ -143,55 +171,97 @@ void server()
 				}
 			}
 			else {
-				/* some data is received */
+				/*-----------------------------------------------------------------------------
+				 *  Handle received data
+				 *-----------------------------------------------------------------------------*/
 				while(1) {
+					/* prepare to read from command */
 					char recvBuf[512];
-					int count = 0;
+					memset(&recvBuf, 0, sizeof(recvBuf));
+
 					/* read data from descr */
+					int count = 0;
 					count = read(epoll_events[i].data.fd, recvBuf, sizeof(recvBuf));
+
 					if(count==-1) {
+						/*-----------------------------------------------------------------------------
+						 *  No data avaliable for reading, break
+						 *-----------------------------------------------------------------------------*/
 						if(errno!=EAGAIN)
 							fprintf(stderr, "recv(): %s\n", strerror(errno));
 						break;
 					}
 					else if(count==0) {
-						/* the other side closed, deregister descr and close conn */
+						/*-----------------------------------------------------------------------------
+						 *  The other end closed, deregister connection and close socket
+						 *-----------------------------------------------------------------------------*/
 						printf("%d terminated!\n", epoll_events[i].data.fd);
+
+						/* deregister */
 						ret = epoll_ctl(epoll_fd, EPOLL_CTL_DEL, epoll_events[i].data.fd, NULL);
 						if(ret==-1)
 							goto fail;
 
 						close(epoll_events[i].data.fd);
+
+						/* free address and port string */
+						free(client_addr);
+						client_addr = NULL;
+
+						free(client_port);
+						client_port = NULL;
+
+						/* kill child if a child was initiated */
+						pcap_stop();
+
 						break;
 					}
+					else {
+						/*-----------------------------------------------------------------------------
+						 *  Data ready for handling
+						 *-----------------------------------------------------------------------------*/
+						printf("Received: %s\n\n", recvBuf);
 
-					/* echo back */
-					if(pid==-1) {
-						pid = fork();
-						if(pid!=0) {
-							ret = write(epoll_events[i].data.fd, recvBuf, count);
-							if(ret==-1)
-								goto fail;
+						/* parse command */
+						json_object *jobj = json_tokener_parse(recvBuf);
+						if(jobj!=NULL) {
+							/* extract instruction */
+							json_object *instruction;
+							json_object_object_get_ex(jobj, "instr", &instruction);
+
+							if(instruction!=NULL) {
+								const char *instr = json_object_get_string(instruction);
+								if(strcmp(instr, "config")==0) {
+									/* set interface */
+									json_object *interface;
+									if(json_object_object_get_ex(jobj, "interface", &interface)!=0) {
+										pcap_set_interface(json_object_get_string(interface));
+									}
+								}
+								else if(strcmp(instr, "start")==0) {
+									/* start capturing */
+									pcap_start(client_addr, epoll_events[i].data.fd);
+								}
+								else if(strcmp(instr, "stop")==0) {
+									/* kill child process */
+									pcap_stop();
+									printf("Capturing stoped!\n");
+									write(epoll_events[i].data.fd, "{\"msg\":\"Capture Ends!\"}", 24);
+								}
+								else {
+									printf("Command not found!\n");
+								}
+							}
+							/* free json */
+							json_object_put(jobj);
 						}
-						else {
-							char buf[512];
-							//sprintf(buf, "!(dst host 127.0.0.1 and dst port %d)", port_no);
-							sprintf(buf, "!(src port %d)", port_no);
-							printf("rule: %s\n", buf);
-							pcap_t *pcap_descr = pcap_init("wlp3s0", buf);
-							pcap_loop(pcap_descr, -1, pcap_cb, (unsigned char*)epoll_events[i].data.fd);
-						}
-					}
-					else if(pid!=-1) {
-						kill(pid, SIGTERM);
-						pid = -1;
-						printf("Capturing ends!\n");
 					}
 				}
 			}
 		}
 	}
 
+	/* close connection */
 	free(epoll_events);
 	close(sock);
 	return;
@@ -204,7 +274,7 @@ fail:
 	if(sock!=-1)
 		close(sock);
 	exit(1);
-}
+}               /* -----  end of function server  ----- */
 
 int main(int argc, char *argv[])
 {
