@@ -220,6 +220,9 @@ void pcap_cb(u_char *data, const struct pcap_pkthdr *packet_hdr, const u_char *p
 			json_object_object_add(dst, "port", dst_port);
 
 			break;
+		default:
+			/* protocol */
+			protocol = json_object_new_int(ip_hdr->ip_p);
 	}
 
 	/*-----------------------------------------------------------------------------
